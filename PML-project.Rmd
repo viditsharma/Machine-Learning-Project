@@ -1,0 +1,195 @@
+---
+title: "Practical Machine Learning Project"
+author: "Sven Boekhoven"
+date: "Saturday, January 24, 2015"
+output:
+  html_document:
+    keep_md: yes
+---
+
+### Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+### Data
+
+The training data for this project are available here: [https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv]
+
+The test data are available here: [https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv]
+
+### Citation
+
+The data for this project come from this source: [http://groupware.les.inf.puc-rio.br/har]. 
+
+### Goal
+
+The goal is to find a model that can predicht the classes below based on the sensor data of an activity.
+
+- exactly according to the specification (Class A)
+- throwing the elbows to the front (Class B)
+- lifting the dumbbell only halfway (Class C)
+- lowering the dumbbell only halfway (Class D)
+- throwing the hips to the front (Class E)
+
+## Loading data
+
+Below the code for loading the data (which was already downloaded to my harddrive).
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+library("knitr")
+
+opts_chunk$set(fig.path = "./figures/") # Set figures path
+opts_chunk$set(cache=FALSE)
+options(scipen=999)
+```
+```{r echo=TRUE, warning=FALSE, message=FALSE}
+library("dplyr")
+library("caret")
+library("tidyr")
+
+set.seed(54356)
+
+pml.training <- read.csv("pml-training.csv", na.strings = c("NA","#DIV/0!", ""), dec = ".")
+```
+
+## Cleaning data
+
+The data needs to be cleaned before it can be used for modelling. I tried several different ways of cleanng the data  before I came up with the following steps:
+
+1. Remove new_window == yes observations because these seem to be aggragates of other column.
+2. Remove the first columns (id, timestamps, subject name) because they are not usefull in predicting.
+3. Remove all columns with NA values.
+
+```{r}
+x <- pml.training %>% filter(new_window == "no")
+x <- x[8:length(x)]
+x <- x[ , ! apply(x ,2 ,function(x) any(is.na(x)) ) ]
+```
+
+## Creating training and testset for cross validation
+
+The assignment provides a training and testset, however, the testset is not really a testset, but more a submission set. To be able to validate the model the provided trainingset will be split in a training and testset for the modelling.
+
+```{r}
+inTrain <- createDataPartition(y=x$classe,
+                               p=0.6, list=FALSE)
+trainingset <- subset(x[inTrain,])
+testset <- subset(x[-inTrain,])
+```
+
+## Cross validation
+
+The default resampling scheme for the caret train function is bootstrap. I have used custom settings instead by setting the below `trainControl`.
+
+The out of sample error should be higher than the in sample error because the the model is based on the training set and will therefor most likely have a slightly worst performance on the testset. This will be shown further in the project.
+
+## Selecting variables
+
+First I made a model on a small part of the training set (for speed). Then I selected the 20 most important variables with `varImp` and run the model again. I repeated this, meanwhile balancing the accurancy and number of variables. With 10 variables I still got very good accuracy and speed on the model with the full training set.
+
+# Decision Tree Model
+
+```{r warning=FALSE, message=FALSE}
+Ctrl <- trainControl(method = "repeatedcv", repeats = 3)
+model_rpart <- train(classe ~ roll_belt + pitch_forearm + yaw_belt + roll_forearm + magnet_dumbbell_z + 
+                             pitch_belt + magnet_dumbbell_y + magnet_dumbbell_x + accel_belt_z + 
+                             magnet_belt_z, data=trainingset, method="rpart", tuneLength = 30, trControl = Ctrl)
+model_rpart$finalModel
+```
+
+# Random forest model 
+
+```{r warning=FALSE, message=FALSE}
+Ctrl <- trainControl(method = "oob")
+model_rf <- train(classe ~ roll_belt + pitch_forearm + yaw_belt + roll_forearm + magnet_dumbbell_z + 
+                             pitch_belt + magnet_dumbbell_y + magnet_dumbbell_x + accel_belt_z + 
+                             magnet_belt_z, data=trainingset, method="rf", 
+                  trControl = Ctrl, tuneGrid = data.frame(.mtry = 2))
+model_rf
+```
+
+# Confusion matrix for both models
+
+The plots below show that the random forest model yields a better result.
+
+## Descision tree
+
+```{r fig.width=4, fig.height=3}
+predictions_rparttest <- predict(model_rpart, testset)
+confusionMatrix(predictions_rparttest, testset$classe)[3]
+
+conf_rpart <- as.data.frame(confusionMatrix(predictions_rparttest, testset$classe)[2])
+conf_rpart <- conf_rpart %>% rename(prediction = table.Prediction, reference = table.Reference, count = table.Freq) %>% 
+        arrange(desc(prediction)) %>% group_by(prediction) %>% mutate(prob = count/sum(count)) %>% ungroup
+ggplot(conf_rpart, aes(reference, prediction)) + 
+        geom_tile(aes(fill = prob), colour = "white") + 
+        geom_text(aes(fill = prob, label = round(prob, 2)), size=3, colour="grey25") +
+        scale_fill_gradient(low = "white", high = "red") +
+        scale_x_discrete(expand = c(0, 0)) +
+        scale_y_discrete(expand = c(0, 0), limits = c("E","D","C","B","A")) 
+```
+
+## Random forest
+
+```{r fig.width=4, fig.height=3}
+predictions_rftest <- predict(model_rf, testset)
+confusionMatrix(predictions_rftest, testset$classe)[3]
+
+conf_rf <- as.data.frame(confusionMatrix(predictions_rftest, testset$classe)[2])
+conf_rf <- conf_rf %>% rename(prediction = table.Prediction, reference = table.Reference, count = table.Freq) %>% 
+        arrange(desc(prediction)) %>% group_by(prediction) %>% mutate(prob = count/sum(count)) %>% ungroup
+ggplot(conf_rf, aes(reference, prediction)) + 
+        geom_tile(aes(fill = prob), colour = "white") + 
+        geom_text(aes(fill = prob, label = round(prob, 2)), size=3, colour="grey25") +
+        scale_fill_gradient(low = "white", high = "red") +
+        scale_x_discrete(expand = c(0, 0)) +
+        scale_y_discrete(expand = c(0, 0), limits = c("E","D","C","B","A")) 
+```
+
+## Sample Error of random forest
+
+```{r}
+model_rf$finalModel ## in-sample
+confusionMatrix(predictions_rftest, testset$classe)[3] ## out-of-sample
+```
+
+The in sample error of the random forest model is 1.69%. The out of sample error is 1.71% (1 - out of sample accuracy). The error rate for the out-of-sample is slightly higher what was expected. Because the model is very accurate the difference is very small.
+
+# Prediction using Random forest model
+
+As shown above the random forest model was the best to predict. So this model is used to predict the class for the submission.   
+
+The heatmap shows that the prediction has a high probability for serveral observation, but is also less certain for others. We will see what the result is when the anwsers are submitted.
+
+```{r fig.width=9, fig.height=3}
+bestfit <- model_rf
+
+pml.submission <- read.csv("pml-testing.csv", na.strings = c("NA","#DIV/0!", ""), dec = ".")
+
+predprob <- predict(bestfit, pml.submission, type = "prob")
+predprob$testcase <- 1:nrow(predprob)
+predprob <- gather(predprob, "class", "prob", 1:5)
+ggplot(predprob, aes(testcase, class)) + 
+        geom_tile(aes(fill = prob), colour = "white") + 
+        geom_text(aes(fill = prob, label = round(prob, 2)), size=3, colour="grey25") +
+        scale_fill_gradient(low = "white", high = "red") +
+        scale_x_discrete(expand = c(0, 0)) +
+        scale_y_discrete(expand = c(0, 0)) 
+
+final_predictions <- predict(bestfit, pml.submission)
+final_predictions
+```
+
+Below the submission files are generated
+
+```{r}
+pml_write_files = function(x){
+        n = length(x)
+        for(i in 1:n){
+                filename = paste0("problem_id_",i,".txt")
+                write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+        }
+}
+
+pml_write_files(final_predictions)
+```
